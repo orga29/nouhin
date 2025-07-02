@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""
-prepare_delivery_sheet_v07z.py — 印刷範囲を A:M に固定 + 余白行完全クリア
-==========================================================================
-* データ行以外をフルクリア。
-* 印刷範囲を列 A〜M に固定（行はデータに応じて自動）。
-* 用紙縦方向・水平中央寄せ。
+"""nouhin.py (2025‑07‑02 Streamlit 対応版)
+在庫集計表 (.xlsm) から "納品数シート" を抽出・整形して保存するコアモジュール。
+旧 v07z と同一仕様。
+
+エクスポート関数 `prepare(src_path, delivery_date)` を追加し、
+Streamlit などから呼び出しやすくした。
 """
 from __future__ import annotations
-import sys, shutil
-from pathlib import Path
+
+import sys
+import shutil
 from datetime import datetime
+from pathlib import Path
 from copy import copy as style_copy
+from string import ascii_uppercase
+
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
@@ -20,6 +24,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.styles import PatternFill
 
+# ---------------- 定数 ----------------
 SRC_SHEET = "在庫集計表"
 DST_SHEET = "納品数"
 DATA_START_ROW_SRC = 8
@@ -28,17 +33,11 @@ FIXED_COLS = ["A", "B", "AN", "AQ"]
 COL_RENAME_MAP = {"A": "商品コード", "B": "商品名", "AN": "箱/こ/不", "AQ": "荷受"}
 WEEKDAY_RANGE = {0:("H","M"),1:("M","R"),2:("R","W"),3:("W","AB"),4:("AB","AG"),5:("AG","AL")}
 
-# ---------------- Utility ----------------
-
-def prompt_date() -> datetime:
-    s = sys.argv[1] if len(sys.argv) >= 2 else input("出荷日 YYYY-MM-DD: ")
-    dt = datetime.strptime(s.strip(), "%Y-%m-%d")
-    if dt.weekday() == 6:
-        sys.exit("⚠ 日曜は出荷対象外です")
-    return dt
+# ---------------- Utilities ----------------
 
 def col_range(a: str, b: str):
     return [get_column_letter(i) for i in range(column_index_from_string(a), column_index_from_string(b)+1)]
+
 
 def load_df(path: Path, letters: list[str]):
     df = pd.read_excel(path, sheet_name=SRC_SHEET, header=None, names=letters,
@@ -47,7 +46,6 @@ def load_df(path: Path, letters: list[str]):
     df.rename(columns={letters[-1]: "納品数"}, inplace=True)
     return df[df["商品コード"].notna()].reset_index(drop=True)
 
-# ---------------- Sorting ----------------
 
 def sort_final(df: pd.DataFrame):
     I = df.iloc[:, 8].fillna('').astype(str).str.strip()
@@ -60,7 +58,7 @@ def sort_final(df: pd.DataFrame):
               .sort_values(['_r', '_s1', '_s2'], ascending=[False, True, True], kind='mergesort')
               .drop(columns=['_r','_s1','_s2']).reset_index(drop=True))
 
-# ---------------- Excel helpers ----------------
+# --- Excel helper ---
 
 def clear_from_row(ws: Worksheet, row: int):
     for r in range(row, ws.max_row + 1):
@@ -74,6 +72,7 @@ def clear_from_row(ws: Worksheet, row: int):
             cell.number_format = "General"
             cell.alignment = None
 
+
 def copy_style_row(ws: Worksheet, src: int, dst: int):
     for c in range(1, ws.max_column + 1):
         sc, dc = ws.cell(row=src, column=c), ws.cell(row=dst, column=c)
@@ -82,6 +81,7 @@ def copy_style_row(ws: Worksheet, src: int, dst: int):
         dc.fill = style_copy(sc.fill)
         dc.number_format = sc.number_format
         dc.alignment = style_copy(sc.alignment)
+
 
 def paste_df(ws: Worksheet, df: pd.DataFrame, start: int):
     base_h = ws.row_dimensions[start].height
@@ -97,7 +97,7 @@ def paste_df(ws: Worksheet, df: pd.DataFrame, start: int):
             ws.cell(row=ridx, column=cidx, value=val)
     clear_from_row(ws, start + need_rows)
 
-# ---------------- File helper ----------------
+# ------------ File helper ------------
 
 def safe_copy(src: Path) -> Path:
     base = src.with_name(src.stem + "_prepared.xlsm")
@@ -113,9 +113,9 @@ def safe_copy(src: Path) -> Path:
             continue
     raise PermissionError("出力ファイルを作成できません — 既存ファイルを閉じてください")
 
-# ---------------- Write ----------------
+# ------------- Write -------------
 
-def write_out(src: Path, df: pd.DataFrame):
+def write_out(src: Path, df: pd.DataFrame) -> Path:
     out = safe_copy(src)
     wb  = load_workbook(out, keep_vba=True)
     ws  = wb[DST_SHEET]
@@ -130,36 +130,50 @@ def write_out(src: Path, df: pd.DataFrame):
             f'IF(COUNTIF($L{r},"■")>0,'
             f'IF(COUNTIF($J{r},"○")>0,"荷受",$K{r}*-1),""))')
 
-    # 印刷設定
     ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
     ws.page_setup.fitToWidth   = 1
     ws.page_margins            = PageMargins(top=0.4, bottom=0.4, left=0.3, right=0.3)
     ws.print_options.horizontalCentered = True
-    ws.print_options.verticalCentered   = False
 
-    # 固定印刷範囲 (A:M)
     last_row = DATA_START_ROW_DST + len(df) - 1
     ws.print_area = [f'A1:M{last_row}']
 
     wb.save(out)
-    print('✅ 出力ファイル:', out)
+    return out
 
-# ---------------- Main ----------------
+# -------- prepare(): Streamlit 用入口 --------
 
-def main():
-    weekday = prompt_date().weekday()
+def prepare(src_path: str | Path, delivery_date: str) -> str:
+    """Streamlit / pytest から直接呼び出すラッパー。"""
+    dt = datetime.strptime(delivery_date, "%Y-%m-%d")
+    weekday = dt.weekday()
+    if weekday == 6:
+        raise ValueError("日曜は出荷対象外です")
     if weekday not in WEEKDAY_RANGE:
-        sys.exit('曜日マッピング未設定')
+        raise ValueError("曜日マッピング未設定です")
 
-    src = Path(input('在庫集計表(.xlsm) [集計表.xlsm]: ').strip() or '集計表.xlsm')
+    src = Path(src_path)
     if not src.exists():
-        sys.exit('入力ファイルが見つかりません')
+        raise FileNotFoundError(f"入力ファイルが見つかりません: {src}")
 
     letters = FIXED_COLS + col_range(*WEEKDAY_RANGE[weekday])
     df = load_df(src, letters)
     df = df[~((df.iloc[:, 4] == 0) & (df.iloc[:, 6] == 0))]
 
-    write_out(src, sort_final(df))
+    return str(write_out(src, sort_final(df)))
 
-if __name__ == '__main__':
+# ------------- CLI main -------------
+
+def main(argv=None):
+    args = sys.argv if argv is None else argv
+    if len(args) < 3:
+        print("Usage: python nouhin.py YYYY-MM-DD 集計表.xlsm", file=sys.stderr)
+        sys.exit(1)
+
+    delivery_date, src_path = args[1], args[2]
+    out_path = prepare(src_path, delivery_date)
+    print("✅ 出力ファイル:", out_path)
+
+
+if __name__ == "__main__":
     main()

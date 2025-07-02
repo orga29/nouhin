@@ -1,0 +1,12 @@
+{
+  "configurations": [
+    {
+      "name": "Streamlit",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "app.py"],
+      "justMyCode": false
+    }
+  ]
+}
