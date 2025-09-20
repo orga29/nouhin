@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import streamlit as st
 from nouhin import prepare            # ← 追加したラッパーを呼ぶ
 
-st.title("📦 納品数シート自動化ツール")
+st.title("📦 納品数シート出力")
 
 default_date = date.today() + timedelta(days=1)
 if default_date.weekday() == 6:
@@ -35,3 +35,4 @@ if st.button("実行") and upload:
             "⬇️ ダウンロード", f, file_name=dl_name,
             mime="application/vnd.ms-excel.sheet.macroEnabled.12"
         )
+
