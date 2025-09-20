@@ -1,12 +1,18 @@
 import tempfile
 from pathlib import Path
+from datetime import date, timedelta
 
 import streamlit as st
 from nouhin import prepare            # ← 追加したラッパーを呼ぶ
 
 st.title("📦 納品数シート自動化ツール")
 
-delivery_date = st.date_input("納品日")
+default_date = date.today() + timedelta(days=1)
+if default_date.weekday() == 6:
+    default_date += timedelta(days=1)
+
+
+delivery_date = st.date_input("納品日", value=default_date)
 upload        = st.file_uploader("在庫集計表 (.xlsm)", type=["xlsm"])
 
 if st.button("実行") and upload:
